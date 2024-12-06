@@ -21,10 +21,13 @@ This tool parses a C codebase using Tree-sitter, extracts information about func
    gcc -shared -fPIC src/parser.c -o ../libtree-sitter-c.so
    cd ..
    
-3. **Put your API key in config.yaml**
+3. **Copy libtree-sitter-c.so to the codebuddy directory**
+   
+
+4. **Put your API key in config.yaml**
 
 
-4. **Run the Tool:**
+5. **Run the Tool:**
     ```bash
    python src/main.py --path path/to/your/c/codebase
 
