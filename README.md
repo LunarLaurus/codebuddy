@@ -35,7 +35,7 @@ This will print a codebase overview.
 
 Flags:  
 
---only-first-llm (just doest one llm pass on descriptions)
+--only-first-llm (just does one llm pass on descriptions)
 
 --no-llm (no llm descriptions)
 
