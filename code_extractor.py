@@ -1,3 +1,5 @@
+# code_extractor.py
+
 def find_identifier(node, code):
     if node.type == 'identifier':
         return code[node.start_byte:node.end_byte].decode('utf-8')
@@ -94,7 +96,6 @@ def extract_prototypes(root_node, code):
     return prototypes
 
 def find_typedef_name_in_node(node, code):
-    # We look for a type_identifier inside this node
     if node.type == 'type_identifier':
         return node_text(node, code)
     for ch in node.children:
@@ -104,7 +105,6 @@ def find_typedef_name_in_node(node, code):
     return None
 
 def extract_structs(root_node, code):
-    # Build a parent map
     parent_map = {}
     def build_parent_map(node, parent=None):
         parent_map[id(node)] = parent
@@ -145,31 +145,24 @@ def extract_structs(root_node, code):
         return fs
 
     def get_struct_name(struct_node):
-        # Check if struct_node has type_identifier directly
         for c in struct_node.children:
             if c.type == 'type_identifier':
                 return node_text(c, code)
-
         current = struct_node
         while current is not None:
             p = get_parent(current)
             if p is None:
                 break
-            # Consider both 'declaration' and 'type_definition'
             if p.type in ('declaration', 'type_definition'):
-                # After we find the struct_node inside p, look for a declarator or type_identifier
                 spec_found = False
-                # The logic: once we find struct_node in p's children, subsequent children might hold the name
                 for ch in p.children:
                     if ch is struct_node:
                         spec_found = True
                     elif spec_found:
-                        # Try to find a type_identifier inside this node (declarator)
                         name = find_typedef_name_in_node(ch, code)
                         if name:
                             return name
             current = p
-
         return "<anonymous>"
 
     structs = []
@@ -178,11 +171,9 @@ def extract_structs(root_node, code):
             struct_code = node_text(node, code)
             fields = []
             struct_name = get_struct_name(node)
-
             for c in node.children:
                 if c.type == 'field_declaration_list':
                     fields = extract_struct_fields(c)
-
             structs.append({
                 'name': struct_name,
                 'fields': fields,
@@ -261,7 +252,6 @@ def extract_globals(root_node, code):
                         var_names.append(node_text(n, code))
                     for ch in n.children:
                         parse_decl(ch)
-
                 parse_decl(node)
                 var_type = " ".join(var_type_parts).strip()
                 if not var_type:
@@ -275,6 +265,27 @@ def extract_globals(root_node, code):
             walk(c)
     walk(root_node)
     return globals_list
+
+def extract_function_calls(root_node, code):
+    """
+    Return a list of (caller_line, callee_name).
+    We'll rely on the caller_line to map back to the caller function.
+    """
+    calls = []
+    def walk(node):
+        if node.type == 'call_expression':
+            callee_name = None
+            for ch in node.children:
+                if ch.type == 'identifier':
+                    callee_name = node_text(ch, code)
+                    break
+            caller_line = node.start_point[0] + 1
+            if callee_name:
+                calls.append((caller_line, callee_name))
+        for c in node.children:
+            walk(c)
+    walk(root_node)
+    return calls
 
 def extract_info_from_file(parser, filename):
     with open(filename, 'rb') as f:
@@ -292,10 +303,12 @@ def extract_info_from_file(parser, filename):
         prototypes = extract_prototypes(root_node, code)
 
     all_functions = funcs + prototypes
+    function_calls = extract_function_calls(root_node, code)
 
     return {
         'functions': all_functions,
         'structs': structs,
         'typedefs': typedefs,
-        'globals': globals_list
+        'globals': globals_list,
+        'calls': function_calls
     }

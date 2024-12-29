@@ -1,6 +1,11 @@
-from llm_client import generate_llm_summary
+# summarizer.py
+
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from llm_client import generate_llm_summary
+from db_utils import (
+    insert_file_summary,
+    insert_function_summary
+)
 from rich.console import Console
 from rich.tree import Tree as RichTree
 from rich.panel import Panel
@@ -8,35 +13,17 @@ from rich.text import Text
 from rich.table import Table
 from rich import box
 
-def build_file_tree(paths, root_path):
-    root_path = root_path.rstrip('/')
-    root_len = len(root_path) + 1
-
-    tree = {}
-    for p in paths:
-        rel_p = p[root_len:] if p.startswith(root_path) else p
-        parts = rel_p.strip("/").split("/")
-        d = tree
-        for part in parts[:-1]:
-            d = d.setdefault(part, {})
-        d[parts[-1]] = None
-    return tree
-
-def print_tree(d, parent):
-    for name, val in sorted(d.items()):
-        branch = parent.add(name, style="green")
-        if isinstance(val, dict):
-            print_tree(val, branch)
-
-def indent_multiline(text):
-    lines = text.split("\n")
-    return "\n".join("    " + l for l in lines)
-
-def create_file_prompt(filename, info):
+def create_file_prompt(abs_file_path, info):
+    """
+    'abs_file_path' is the absolute path to read file content.
+    """
     structs = info.get('structs', [])
     typedefs = info.get('typedefs', [])
     globals_ = info.get('globals', [])
-    functions = info.get('functions', [])
+
+    def indent_multiline(text):
+        lines = text.split("\n")
+        return "\n".join("    " + l for l in lines)
 
     struct_lines = []
     for s in structs:
@@ -44,7 +31,7 @@ def create_file_prompt(filename, info):
 
     typedef_lines = []
     for td in typedefs:
-        typedef_lines.append(f"- {td['alias']} = {td['original']}\n{indent_multiline(td['code'])}")
+        typedef_lines.append(f"- {td['alias']}:\n{indent_multiline(td['code'])}")
 
     global_lines = []
     for g in globals_:
@@ -52,23 +39,20 @@ def create_file_prompt(filename, info):
 
     structs_info = "\n".join(struct_lines) if struct_lines else "None"
     typedefs_info = "\n".join(typedef_lines) if typedef_lines else "None"
-    globals_info = "\n".join(global_lines) if global_lines else "None"
+    globals_info = "\n".join(global_lines) if globals_ else "None"
 
-    if filename.endswith('.h'):
-        file_type_description = "header file (interfaces, data structures, and prototypes)"
+    if abs_file_path.endswith(".h"):
+        file_type = "header file"
     else:
-        file_type_description = "source file (implementations)"
+        file_type = "source file"
 
-    with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+    with open(abs_file_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
 
-    prompt = f"""The following is a C {file_type_description}, along with extracted data structures, typedefs, globals, and functions/prototypes.
-The code snippets for structs and typedefs are included below.
-Summarize the file’s purpose and how these elements are intended to be used. Keep it concise.
+    prompt = f"""This is a C {file_type} at {abs_file_path}, with extracted data structures, typedefs, and globals.
+Summarize the file’s purpose and usage. Keep it concise.
 
-File: {filename}
-
-Key Data Structures:
+Structures:
 {structs_info}
 
 Typedefs:
@@ -83,53 +67,16 @@ Globals:
 """
     return prompt
 
-def create_refine_prompt(filename, info, first_summary):
-    structs = info.get('structs', [])
-    typedefs = info.get('typedefs', [])
-    globals_ = info.get('globals', [])
-    functions = info.get('functions', [])
-
-    struct_lines = []
-    for s in structs:
-        struct_lines.append(f"- {s['name']}:\n{indent_multiline(s['code'])}")
-
-    typedef_lines = []
-    for td in typedefs:
-        typedef_lines.append(f"- {td['alias']} = {td['original']}\n{indent_multiline(td['code'])}")
-
-    global_lines = []
-    for g in globals_:
-        global_lines.append(f"- {g['type']} {g['name']}")
-
-    structs_info = "\n".join(struct_lines) if struct_lines else "None"
-    typedefs_info = "\n".join(typedef_lines) if typedef_lines else "None"
-    globals_info = "\n".join(global_lines) if global_lines else "None"
-
-    if filename.endswith('.h'):
-        file_type_description = "header file"
-    else:
-        file_type_description = "source file"
-
-    with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+def create_refine_prompt(abs_file_path, first_summary):
+    with open(abs_file_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
-
-    prompt = f"""Below is the initial summary of the {file_type_description} named {filename}:
+    prompt = f"""Below is the initial summary for file {abs_file_path}:
 
 === INITIAL SUMMARY ===
 {first_summary}
 === END INITIAL SUMMARY ===
 
-Now, you have the extracted data structures, typedefs, globals, functions/prototypes and the entire source file again.
-Please produce a more accurate, improved, and concise summary of this file’s purpose and usage, leveraging the insights from the initial summary. Focus on clarity and correctness, and present this as the final summary of the file.
-
-Key Data Structures:
-{structs_info}
-
-Typedefs:
-{typedefs_info}
-
-Globals:
-{globals_info}
+Refine or improve the summary for correctness and brevity.
 
 === CODE START ===
 {content}
@@ -137,247 +84,125 @@ Globals:
 """
     return prompt
 
-def create_overview_text(code_map, root_path):
-    lines = []
-    lines.append("=== Codebase Overview ===")
-    lines.append("")
-    lines.append("Project File Tree:")
+def summarize_file_in_db(conn, file_id, root_path, rel_path, info, commit_sha="HEAD"):
+    abs_file_path = os.path.join(root_path, rel_path)
 
-    file_paths = sorted(code_map.keys())
-    tree = build_file_tree(file_paths, root_path)
+    prompt = create_file_prompt(abs_file_path, info)
+    summary1 = generate_llm_summary(prompt)
 
-    def print_tree_text(d, prefix=""):
-        keys = sorted(d.keys())
-        for i, k in enumerate(keys):
-            connector = "└── " if i == len(keys)-1 else "├── "
-            if d[k] is None:
-                lines.append(prefix + connector + k)
-            else:
-                lines.append(prefix + connector + k)
-                extension = "    " if i == len(keys)-1 else "│   "
-                print_tree_text(d[k], prefix+extension)
+    refine_prompt = create_refine_prompt(abs_file_path, summary1)
+    summary2 = generate_llm_summary(refine_prompt)
 
-    print_tree_text(tree)
+    insert_file_summary(conn, file_id, commit_sha, summary1, summary2)
 
-    lines.append("")
-    lines.append("Project Structure:")
-    lines.append("")
+def summarize_function_in_db(conn, function_id, code_snippet, commit_sha="HEAD"):
+    prompt1 = f"""Below is a single C function:
 
-    for fname, info in code_map.items():
-        if not isinstance(info, dict):
-            continue
-        funcs = info.get('functions', [])
-        lines.append(f"File: {fname}")
-        if funcs:
-            real_funcs = [f for f in funcs if not f.get('prototype', False)]
-            protos = [f for f in funcs if f.get('prototype', False)]
-            total_count = len(funcs)
-            lines.append(f"  Functions/Prototypes ({total_count} total):")
-            i = 1
-            for func in real_funcs:
-                name = func['name'] or "None"
-                rtype = func['return_type'] or "None"
-                params = func['parameters'] or []
-                params_str = ", ".join(params)
-                if params_str:
-                    func_line = f"    {i}. {rtype} {name}({params_str}) [lines {func['start_line']}–{func['end_line']}]"
-                else:
-                    func_line = f"    {i}. {rtype} {name}() [lines {func['start_line']}–{func['end_line']}]"
-                lines.append(func_line)
-                i += 1
-            for func in protos:
-                name = func['name'] or "None"
-                rtype = func['return_type'] or "None"
-                params = func['parameters'] or []
-                params_str = ", ".join(params)
-                if params_str:
-                    func_line = f"    {i}. (prototype) {rtype} {name}({params_str}) [lines {func['start_line']}–{func['end_line']}]"
-                else:
-                    func_line = f"    {i}. (prototype) {rtype} {name}() [lines {func['start_line']}–{func['end_line']}]"
-                lines.append(func_line)
-                i += 1
-            lines.append(f"  Summary: {len(real_funcs)} definitions, {len(protos)} prototypes.")
-        else:
-            lines.append("  No functions or prototypes found.")
+=== FUNCTION CODE ===
+{code_snippet}
+=== CODE END ===
 
-        s_count = len(info.get('structs', []))
-        t_count = len(info.get('typedefs', []))
-        g_count = len(info.get('globals', []))
-        lines.append(f"  Structs: {s_count}, Typedefs: {t_count}, Globals: {g_count}")
+Summarize its purpose, inputs, outputs, and key logic. Keep it concise.
+"""
+    summ1 = generate_llm_summary(prompt1)
 
-        structs = info.get('structs', [])
-        if structs:
-            lines.append("  Struct Definitions:")
-            for s in structs:
-                lines.append(f"    {s['name']}:")
-                for l in s['code'].split("\n"):
-                    lines.append(f"      {l}")
+    prompt2 = f"""Initial summary of the function:
+{summ1}
 
-        typedefs = info.get('typedefs', [])
-        if typedefs:
-            lines.append("  Typedef Definitions:")
-            for td in typedefs:
-                lines.append(f"    {td['alias']} = {td['original']}:")
-                for l in td['code'].split("\n"):
-                    lines.append(f"      {l}")
+Refine or improve it, focusing on correctness and brevity.
+"""
+    summ2 = generate_llm_summary(prompt2)
 
-        final_summary = info.get('file_summary', None)
-        if final_summary:
-            lines.append("  File Summary:")
-            lines.append(f"    {final_summary}")
-
-        lines.append("")
-
-    project_summary = code_map.get('_project_summary', None)
-    if project_summary:
-        lines.append("=== Final Project Summary ===")
-        lines.append(project_summary)
-        lines.append("")
-
-    return "\n".join(lines)
+    insert_function_summary(conn, function_id, commit_sha, summ1, summ2)
 
 def print_pretty_overview(code_map, root_path):
     console = Console()
-
     console.rule("[bold magenta]Codebase Overview[/bold magenta]")
     console.print("")
 
-    console.print("[bold cyan]Project File Tree:[/bold cyan]")
-    file_paths = sorted(code_map.keys())
-    tree_dict = build_file_tree(file_paths, root_path)
+    def build_path_tree(paths):
+        root = {}
+        for p in paths:
+            parts = p.strip("/").split("/")
+            d = root
+            for part in parts[:-1]:
+                d = d.setdefault(part, {})
+            d[parts[-1]] = None
+        return root
+
+    tree_dict = build_path_tree(code_map.keys())
     rich_tree = RichTree("Project Root", style="bold green")
-    def add_tree_nodes(d, parent):
+
+    def add_subtree(d, parent):
         for k in sorted(d.keys()):
             branch = parent.add(k, style="green")
             if isinstance(d[k], dict):
-                add_tree_nodes(d[k], branch)
+                add_subtree(d[k], branch)
 
-    add_tree_nodes(tree_dict, rich_tree)
+    add_subtree(tree_dict, rich_tree)
     console.print(rich_tree)
     console.print("")
 
-    console.print("[bold cyan]Project Structure:[/bold cyan]")
-    console.print("")
-
-    for fname, info in code_map.items():
-        if not isinstance(info, dict):
-            continue
-
-        file_panel = Panel.fit(Text(fname, style="bold yellow"), border_style="yellow", title="File", title_align="left")
+    for fpath, fdata in code_map.items():
+        panel_title = f"{fpath}"
+        file_panel = Panel.fit(Text(panel_title, style="bold yellow"), border_style="yellow",
+                               title="File", title_align="left")
         console.print(file_panel)
         console.print("")
 
-        funcs = info.get('functions', [])
-        s_count = len(info.get('structs', []))
-        t_count = len(info.get('typedefs', []))
-        g_count = len(info.get('globals', []))
+        # File summary
+        file_summary = fdata.get("file_summary")
+        if file_summary:
+            console.print("[bold magenta]File Summary:[/bold magenta]")
+            console.print(Panel(file_summary, border_style="magenta"))
+            console.print("")
 
-        ftable = Table(box=box.SIMPLE, title="Functions/Prototypes", show_header=True, header_style="bold magenta")
+        funcs = fdata.get("functions", [])
+        if not funcs:
+            console.print("[dim]No functions found in this file.[/dim]")
+            console.print("")
+            continue
+
+        # Basic table for function definitions
+        ftable = Table(box=box.SIMPLE, title="Functions", show_header=True, header_style="bold magenta")
         ftable.add_column("#", justify="right")
         ftable.add_column("Name", style="bold")
         ftable.add_column("Type", style="cyan")
-        ftable.add_column("Params", style="dim")
         ftable.add_column("Lines", justify="right")
 
         i = 1
-        if funcs:
-            real_funcs = [f for f in funcs if not f.get('prototype', False)]
-            protos = [f for f in funcs if f.get('prototype', False)]
-            for func in real_funcs:
-                name = func['name'] or "None"
-                rtype = func['return_type'] or "None"
-                params = ", ".join(func['parameters'] or [])
-                lines_str = f"{func['start_line']}–{func['end_line']}"
-                ftable.add_row(str(i), name, rtype, params, lines_str)
-                i += 1
-            for func in protos:
-                name = func['name'] or "None"
-                rtype = func['return_type'] or "None"
-                params = ", ".join(func['parameters'] or [])
-                lines_str = f"{func['start_line']}–{func['end_line']}"
-                ftable.add_row(str(i), f"(prototype) {name}", rtype, params, lines_str)
-                i += 1
+        for func in funcs:
+            name = func["name"]
+            rtype = func.get("return_type", "")
+            line_str = f"{func['start_line']}–{func['end_line']}"
+            ftable.add_row(str(i), name, rtype, line_str)
+            i += 1
 
-            console.print(ftable)
-            console.print(f"[bold]{len(real_funcs)} definitions, {len(protos)} prototypes.[/bold]")
-        else:
-            console.print("[dim]No functions or prototypes found.[/dim]")
+        console.print(ftable)
+        console.print("")
 
-        console.print(f"Structs: {s_count}, Typedefs: {t_count}, Globals: {g_count}\n", style="cyan")
+        # For each function, show summary if present, and references
+        for func in funcs:
+            func_name = func["name"]
+            func_summary = func.get("func_summary")
+            callers = func.get("callers")
+            callees = func.get("callees")
 
-        # Struct definitions
-        if info.get('structs', []):
-            console.print("[bold blue]Struct Definitions:[/bold blue]")
-            for s in info['structs']:
-                console.print(Text(s['name'], style="bold"))
-                console.print(Panel(indent_multiline(s['code']), title="Code", border_style="blue"))
-            console.print("")
+            # If there's any detail to show (summary or references), print a heading
+            if func_summary or callers or callees:
+                console.print(f"[bold cyan]Function '{func_name}' details:[/bold cyan]")
 
-        # Typedef definitions
-        if info.get('typedefs', []):
-            console.print("[bold blue]Typedef Definitions:[/bold blue]")
-            for td in info['typedefs']:
-                console.print(Text(f"{td['alias']} = {td['original']}", style="bold"))
-                console.print(Panel(indent_multiline(td['code']), title="Code", border_style="blue"))
-            console.print("")
+            # Optional summary
+            if func_summary:
+                console.print(Panel(func_summary, border_style="cyan"))
 
-        final_summary = info.get('file_summary', None)
-        if final_summary:
-            console.print("[bold magenta]File Summary:[/bold magenta]")
-            console.print(Panel(final_summary, border_style="magenta"))
-            console.print("")
+            # References
+            if callers:
+                console.print(f"[bold blue]Called by:[/bold blue] {', '.join(callers)}")
+            if callees:
+                console.print(f"[bold blue]Calls:[/bold blue] {', '.join(callees)}")
 
-    project_summary = code_map.get('_project_summary', None)
-    if project_summary:
-        console.rule("[bold magenta]Final Project Summary[/bold magenta]")
-        console.print(Panel(project_summary, border_style="magenta"))
+            if func_summary or callers or callees:
+                console.print("")
 
-def run_llm_task(prompt):
-    return generate_llm_summary(prompt)
-
-def summarize_files(code_map):
-    tasks = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        for fname, info in code_map.items():
-            if fname.startswith('_'):
-                continue
-            if not isinstance(info, dict):
-                continue
-            prompt = create_file_prompt(fname, info)
-            future = executor.submit(run_llm_task, prompt)
-            tasks.append((fname, future))
-
-        for fname, fut in tasks:
-            summary = fut.result()
-            code_map[fname]['file_summary'] = summary
-    return [info['file_summary'] for fname, info in code_map.items() if isinstance(info, dict) and 'file_summary' in info]
-
-def refine_file_summaries(code_map):
-    tasks = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        for fname, info in code_map.items():
-            if fname.startswith('_'):
-                continue
-            if not isinstance(info, dict):
-                continue
-            first_summary = info.get('file_summary', None)
-            if not first_summary:
-                continue
-            prompt = create_refine_prompt(fname, info, first_summary)
-            future = executor.submit(run_llm_task, prompt)
-            tasks.append((fname, future))
-
-        for fname, fut in tasks:
-            refined_summary = fut.result()
-            code_map[fname]['file_refined_summary'] = refined_summary
-
-def summarize_project(file_summaries):
-    prompt = (
-        "Below are short summaries of several C source and header files from a project.\n"
-        "Produce a very concise overall summary of the entire codebase, focusing on architecture, data flow, and interactions.\n\n"
-        "File Summaries:\n"
-    )
-    for i, fs in enumerate(file_summaries, 1):
-        prompt += f"{i}. {fs}\n"
-
-    return generate_llm_summary(prompt)
+    console.rule("[bold magenta]End of Overview[/bold magenta]")
