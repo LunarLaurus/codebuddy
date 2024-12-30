@@ -176,18 +176,6 @@ A simplified overview of the major files:
 4. **OpenAI Key**: Make sure you have `OPENAI_API_KEY` set or your config is placed in `config.yaml`.  
 5. **Security**: The LLM calls send code snippets to an external API (OpenAI). Keep that in mind for proprietary code.
 
----
-
-## License
-
-Include your license or disclaimers here, for example:
-
-```
-MIT License
-
-Copyright (c) 2023 ...
-Permission is hereby granted...
-```
 
 ---
 
