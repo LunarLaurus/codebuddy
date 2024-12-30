@@ -20,8 +20,8 @@ from db_utils import (
 
 def build_code_map_from_db(conn, commit_sha="HEAD"):
     """
-    Collect data from the DB into a code_map, including references and function summaries.
-    Then remove any duplicate callers/callees for cleaner output.
+    Collect data from the DB into a code_map, unify duplicate function entries
+    in the same file (same name & lines), and cull duplicate references.
     """
     code_map = {}
     cur = conn.cursor()
@@ -77,7 +77,7 @@ def build_code_map_from_db(conn, commit_sha="HEAD"):
                 "type": snippet
             })
 
-    # 4) Functions
+    # 4) Collect all function rows
     import json as pyjson
     cur.execute("""
       SELECT function_id, file_id, name, return_type, parameters,
@@ -86,16 +86,16 @@ def build_code_map_from_db(conn, commit_sha="HEAD"):
     """)
     func_map = {}
     for row in cur.fetchall():
-        (func_id, fid, fname, rt, params_json, st, en, proto) = row
-        relp = file_id_to_path.get(fid)
+        (f_id, file_id, fname, rt, params_json, st, en, proto) = row
+        relp = file_id_to_path.get(file_id)
         if not relp:
             continue
         try:
             params = pyjson.loads(params_json)
         except:
             params = []
-        func_map[func_id] = {
-            "file_id": fid,
+        func_map[f_id] = {
+            "file_id": file_id,
             "path": relp,
             "name": fname,
             "return_type": rt,
@@ -122,38 +122,74 @@ def build_code_map_from_db(conn, commit_sha="HEAD"):
 
     # 6) References (function_calls)
     cur.execute("SELECT caller_id, callee_id FROM function_calls")
-    rows = cur.fetchall()
     from db_utils import fetch_function_name_and_file
-    for (cid, calid) in rows:
+    for (cid, calid) in cur.fetchall():
         if cid in func_map and calid in func_map:
             c_unique, _ = fetch_function_name_and_file(conn, cid)
             cal_unique, _ = fetch_function_name_and_file(conn, calid)
-            func_map[cid]["callees"].append(cal_unique)
+            func_map[cid]["callees"].append(c_unique)
             func_map[calid]["callers"].append(c_unique)
 
-    # 7) Cull duplicates and attach to code_map
-    for fid_, fobj in func_map.items():
-        # remove duplicates by converting to dict.fromkeys or a set, then back to list
+    # 7) Cull duplicates from references (callers/callees)
+    for fobj in func_map.values():
         fobj["callers"] = list(dict.fromkeys(fobj["callers"]))
         fobj["callees"] = list(dict.fromkeys(fobj["callees"]))
 
-        relp = fobj["path"]
-        final_func = {
-            "name": fobj["name"],
-            "return_type": fobj["return_type"],
-            "parameters": fobj["parameters"],
-            "start_line": fobj["start_line"],
-            "end_line": fobj["end_line"],
-            "prototype": fobj["prototype"]
-        }
-        if "func_summary" in fobj:
-            final_func["func_summary"] = fobj["func_summary"]
-        if fobj["callers"]:
-            final_func["callers"] = fobj["callers"]
-        if fobj["callees"]:
-            final_func["callees"] = fobj["callees"]
+    # 8) Now unify duplicates if we have multiple function_id rows for the
+    #    same file + same name + same lines. We'll pick the "best" info from each.
+    #    Key = (path, name, start_line, end_line).
+    unify_map = {}
+    for fid_, fobj in func_map.items():
+        unify_key = (fobj["path"], fobj["name"], fobj["start_line"], fobj["end_line"])
+        if unify_key not in unify_map:
+            unify_map[unify_key] = {
+                "name": fobj["name"],
+                "return_type": fobj["return_type"],
+                "parameters": fobj["parameters"],
+                "start_line": fobj["start_line"],
+                "end_line": fobj["end_line"],
+                "prototype": fobj["prototype"],
+                "callers": fobj["callers"][:],
+                "callees": fobj["callees"][:],
+                "func_summary": fobj.get("func_summary", None)
+            }
+        else:
+            # Merge data: references, summary, etc.
+            existing = unify_map[unify_key]
+            # Keep or union references
+            existing["callers"].extend(fobj["callers"])
+            existing["callees"].extend(fobj["callees"])
+            existing["callers"] = list(dict.fromkeys(existing["callers"]))
+            existing["callees"] = list(dict.fromkeys(existing["callees"]))
 
-        code_map[relp]["functions"].append(final_func)
+            # If we have a summary in either, pick one
+            if not existing.get("func_summary") and "func_summary" in fobj:
+                existing["func_summary"] = fobj["func_summary"]
+
+            # Return type or parameters might differ if the header is incomplete
+            # We'll just keep the existing or update if the new one is "better"
+            # but to keep it simple, we do nothing unless you want more logic
+            # about picking "non-empty" return_type.
+            # existing["return_type"] = ???
+
+    # attach each final unified function to code_map
+    for (path, name, st, en), fdata in unify_map.items():
+        final_func = {
+            "name": fdata["name"],
+            "return_type": fdata["return_type"],
+            "parameters": fdata["parameters"],
+            "start_line": fdata["start_line"],
+            "end_line": fdata["end_line"],
+            "prototype": fdata["prototype"]
+        }
+        if fdata["callers"]:
+            final_func["callers"] = fdata["callers"]
+        if fdata["callees"]:
+            final_func["callees"] = fdata["callees"]
+        if fdata["func_summary"]:
+            final_func["func_summary"] = fdata["func_summary"]
+
+        code_map[path]["functions"].append(final_func)
 
     return code_map
 
