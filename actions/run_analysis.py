@@ -91,9 +91,7 @@ async def _run_full_analysis_async(
     return code_map
 
 
-def run_full_analysis(
-    repo_path: str, db_path: str = "summaries.db", summarize_functions: bool = False
-):
+def run_full_analysis(repo_path: str, db_path: str, summarize_functions: bool = False):
     """Synchronous wrapper for menu."""
     logger.info("Running full analysis...")
     result = asyncio.run(

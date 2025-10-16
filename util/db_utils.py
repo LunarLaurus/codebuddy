@@ -90,20 +90,20 @@ class SQLiteConnectionPool:
     Simple thread-safe SQLite connection pool.
     """
 
-    def __init__(self, db_path="summaries.db", pool_size=5):
+    def __init__(self, db_path, pool_size=5, schema=SCHEMA):
         self.db_path = db_path
         self.pool_size = pool_size
         self.pool = Queue(maxsize=pool_size)
         self.lock = threading.Lock()  # protects pool initialization
-        self._init_pool()
+        self._init_pool(schema)
 
-    def _init_pool(self):
+    def _init_pool(self, schema):
         with self.lock:
             must_init = not os.path.exists(self.db_path)
             for _ in range(self.pool_size):
                 conn = sqlite3.connect(self.db_path, check_same_thread=False)
                 if must_init:
-                    conn.executescript(SCHEMA)
+                    conn.executescript(schema)
                     conn.commit()
                     must_init = False
                 self.pool.put(conn)

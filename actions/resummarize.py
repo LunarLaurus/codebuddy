@@ -102,7 +102,7 @@ async def _resummarize_changed_async(
 # ------------------------------
 def resummarize_changed_files(
     repo_path: str,
-    db_path: str = "summaries.db",
+    db_path: str,
     old_rev: str = "HEAD~1",
     new_rev: str = "HEAD",
 ):
