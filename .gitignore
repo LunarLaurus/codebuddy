@@ -1,1 +1,5 @@
 *.pyc
+/*.db
+/.venv
+/*.db-journal
+/code_analysis/__pycache__/*.pyc
