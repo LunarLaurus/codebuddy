@@ -1,5 +1,5 @@
 import yaml
-from laurus_local_llm.llm_helpers import LLMWrapper
+from laurus_llm.llm_helpers import LLMWrapper
 
 
 # ---------------- Config ----------------
