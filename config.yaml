@@ -1,5 +1,4 @@
 # config.yaml
-default_path: "C:/Users/User/Documents/coding/pkm/pokeheartgold"
 
 # URL of your local LLM server
 local_llm_url: "http://localhost:8000"

@@ -5,7 +5,6 @@ import importlib
 import logging
 from pathlib import Path
 
-from util.llm_client import DEFAULT_PATH
 from util.project_manager import select_project, clone_project, list_projects, Project
 from actions.run_analysis import run_full_analysis, build_code_map_from_db
 from actions.resummarize import resummarize_changed_files
