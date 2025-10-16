@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS commits (
     author TEXT,
     message TEXT
 );
+
+CREATE TABLE IF NOT EXISTS projects (
+    project_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
+    git_url TEXT,
+    last_commit TEXT
+);
 """
 
 
@@ -292,3 +300,29 @@ def fetch_function_name_and_file(pool: SQLiteConnectionPool, function_id: int):
         return unique_name, rel_path
     finally:
         pool.release(conn)
+
+
+def insert_or_get_project(db_pool, name, path, git_url=None):
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO projects (name, path, git_url) VALUES (?, ?, ?)",
+            (name, path, git_url),
+        )
+        conn.commit()
+        cur.execute("SELECT project_id FROM projects WHERE name=?", (name,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        db_pool.release(conn)
+
+
+def list_projects(db_pool):
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT project_id, name, path, git_url, last_commit FROM projects")
+        return cur.fetchall()
+    finally:
+        db_pool.release(conn)

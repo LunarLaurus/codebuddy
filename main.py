@@ -1,4 +1,4 @@
-# main.py - Frontend menu
+# main.py - Frontend menu (updated with Project Management)
 
 import sys
 import subprocess
@@ -6,7 +6,9 @@ import importlib
 import logging
 from pathlib import Path
 
+from util.db_utils import SQLiteConnectionPool
 from util.llm_client import DEFAULT_PATH
+from util.project_manager import select_project, clone_project, list_projects
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,7 +27,6 @@ def install_requirements():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Extract module name from package name (simple heuristic)
             module_name = line.split("==")[0].replace("-", "_")
             try:
                 importlib.import_module(module_name)
@@ -56,36 +57,45 @@ def print_menu():
     table.add_row("2", "Resummarize changed files/functions (Git incremental)")
     table.add_row("3", "View existing summaries in DB (JSON)")
     table.add_row("4", "View existing summaries in DB (Pretty CLI)")
+    table.add_row("5", "List cloned projects")
+    table.add_row("6", "Clone new Git project")
     table.add_row("0", "Exit")
     console.print(table)
 
 
 def main():
+    db_pool = SQLiteConnectionPool("summaries.db", pool_size=5)
+
     while True:
         print_menu()
+
         choice = input("Select an option: ").strip()
         if choice == "0":
             console.print("[bold green]Exiting.[/bold green]")
             sys.exit(0)
+
         elif choice == "1":
-            repo_path = (
-                input(f"Enter codebase path [{DEFAULT_PATH}]: ").strip() or DEFAULT_PATH
-            )
+            repo_path = input(
+                "Enter codebase path [Select]: "
+            ).strip() or select_project(db_pool)
             db_path = input("Enter DB path [summaries.db]: ").strip() or "summaries.db"
             summarize_functions = (
                 input("Summarize functions? (y/N): ").strip().lower() == "y"
             )
             run_full_analysis(repo_path, db_path, summarize_functions)
+
         elif choice == "2":
-            repo_path = input("Enter Git repo path: ").strip()
+            repo_path = select_project(db_pool)
             db_path = input("Enter DB path [summaries.db]: ").strip() or "summaries.db"
             resummarize_changed_files(repo_path, db_path)
+
         elif choice == "3":
             db_path = input("Enter DB path [summaries.db]: ").strip() or "summaries.db"
             code_map = build_code_map_from_db(db_path)
             import json
 
             print(json.dumps(code_map, indent=2))
+
         elif choice == "4":
             db_path = input("Enter DB path [summaries.db]: ").strip() or "summaries.db"
             from actions.summarizer import print_pretty_overview
@@ -93,6 +103,32 @@ def main():
             repo_path = input("Enter codebase path: ").strip()
             code_map = build_code_map_from_db(db_path)
             print_pretty_overview(code_map, repo_path)
+
+        elif choice == "5":
+            projects = list_projects(db_pool)
+            if not projects:
+                console.print("[bold yellow]No cloned projects found.[/bold yellow]")
+            else:
+                table = Table(title="Cloned Projects")
+                table.add_column("ID", justify="center")
+                table.add_column("Name")
+                table.add_column("Path")
+                table.add_column("Git URL")
+                for pid, name, path, git_url, last_commit in projects:
+                    table.add_row(str(pid), name, path, git_url or "-")
+                console.print(table)
+
+        elif choice == "6":
+            git_url = input("Enter Git URL to clone: ").strip()
+            name = input("Optional: project name: ").strip() or None
+            try:
+                project_path = clone_project(db_pool, git_url, name)
+                console.print(
+                    f"[bold green]Project cloned to:[/bold green] {project_path}"
+                )
+            except Exception as e:
+                console.print(f"[bold red]Failed to clone project:[/bold red] {e}")
+
         else:
             console.print("[bold red]Invalid choice![/bold red]")
 
