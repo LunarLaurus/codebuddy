@@ -3,3 +3,4 @@ PyYAML
 laurus-llm
 tree_sitter
 tree_sitter_languages
+tree-sitter-language-pack
