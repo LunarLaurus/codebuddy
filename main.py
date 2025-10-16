@@ -6,6 +6,8 @@ import importlib
 import logging
 from pathlib import Path
 
+from util.llm_client import DEFAULT_PATH
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,9 @@ def main():
             console.print("[bold green]Exiting.[/bold green]")
             sys.exit(0)
         elif choice == "1":
-            repo_path = input("Enter codebase path: ").strip()
+            repo_path = (
+                input(f"Enter codebase path [{DEFAULT_PATH}]: ").strip() or DEFAULT_PATH
+            )
             db_path = input("Enter DB path [summaries.db]: ").strip() or "summaries.db"
             summarize_functions = (
                 input("Summarize functions? (y/N): ").strip().lower() == "y"
@@ -84,7 +88,7 @@ def main():
             print(json.dumps(code_map, indent=2))
         elif choice == "4":
             db_path = input("Enter DB path [summaries.db]: ").strip() or "summaries.db"
-            from summarizer import print_pretty_overview
+            from actions.summarizer import print_pretty_overview
 
             repo_path = input("Enter codebase path: ").strip()
             code_map = build_code_map_from_db(db_path)

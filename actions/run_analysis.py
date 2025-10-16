@@ -1,63 +1,113 @@
 # actions/run_analysis.py
 import asyncio
+import logging
 from pathlib import Path
 
-from util.db_utils import get_connection
+from util.db_utils import SQLiteConnectionPool
 from code_analysis.parser import load_language, get_parser
 from code_analysis.code_map_builder import parse_and_store_entire_codebase
 from code_analysis.summarization import resummarize_file, summarize_function_in_db
 from code_analysis.code_map import build_code_map_from_db as _build_code_map_from_db
 from code_analysis.output import print_code_map
 
+# ------------------------------
+# Logging setup
+# ------------------------------
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 
 async def _run_full_analysis_async(
     repo_path: str, db_path: str, summarize_functions: bool
 ):
-    conn = get_connection(db_path)
+    logger.info("Initializing DB connection pool...")
+    db_pool = SQLiteConnectionPool(db_path, pool_size=5)
+
+    logger.info("Loading parser for C language...")
     language = load_language("c")
     parser = get_parser(language)
     root_path = Path(repo_path).resolve()
+    logger.info(f"Resolved repository path: {root_path}")
 
-    # Parse & store entire codebase
+    logger.info("Parsing and storing entire codebase...")
     await asyncio.to_thread(
-        parse_and_store_entire_codebase, conn, parser, str(root_path)
+        parse_and_store_entire_codebase, db_pool, parser, str(root_path)
     )
+    logger.info("Codebase parsing complete.")
 
     # File-level summaries
-    cur = conn.cursor()
-    cur.execute("SELECT file_id, path FROM files")
-    tasks = [
-        resummarize_file(conn, parser, root_path / rel_path, commit_sha="HEAD")
-        for _, rel_path in cur.fetchall()
-    ]
-    if tasks:
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT file_id, path FROM files")
+        files = cur.fetchall()
+        logger.info(f"Found {len(files)} files to summarize.")
+    finally:
+        db_pool.release(conn)
+
+    if files:
+        logger.info("Starting file-level summaries...")
+        tasks = [
+            asyncio.to_thread(
+                resummarize_file,
+                db_pool,
+                parser,
+                root_path / rel_path,
+                commit_sha="HEAD",
+            )
+            for _, rel_path in files
+        ]
         await asyncio.gather(*tasks)
+        logger.info("File-level summaries complete.")
 
     # Function-level summaries
     if summarize_functions:
-        cur.execute("SELECT function_id, code_snippet FROM functions")
-        for fid, snippet in cur.fetchall():
-            if snippet.strip():
-                await asyncio.to_thread(
-                    summarize_function_in_db, conn, fid, snippet, commit_sha="HEAD"
-                )
+        logger.info("Starting function-level summaries...")
+        conn = db_pool.acquire()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT function_id, code_snippet FROM functions")
+            functions = cur.fetchall()
+            logger.info(f"Found {len(functions)} functions to summarize.")
+        finally:
+            db_pool.release(conn)
 
-    return _build_code_map_from_db(conn)
+        func_tasks = [
+            asyncio.to_thread(
+                summarize_function_in_db, db_pool, fid, snippet, commit_sha="HEAD"
+            )
+            for fid, snippet in functions
+            if snippet.strip()
+        ]
+        if func_tasks:
+            await asyncio.gather(*func_tasks)
+        logger.info("Function-level summaries complete.")
+
+    logger.info("Building code map from DB...")
+    code_map = _build_code_map_from_db(db_pool)
+    logger.info("Code map construction complete.")
+    return code_map
 
 
 def run_full_analysis(
     repo_path: str, db_path: str = "summaries.db", summarize_functions: bool = False
 ):
     """Synchronous wrapper for menu."""
-    return asyncio.run(
+    logger.info("Running full analysis...")
+    result = asyncio.run(
         _run_full_analysis_async(repo_path, db_path, summarize_functions)
     )
+    logger.info("Full analysis finished.")
+    return result
 
 
-def build_code_map_from_db(db_path_or_conn):
-    """Flexible: accept either DB path or connection."""
-    if isinstance(db_path_or_conn, str):
-        conn = get_connection(db_path_or_conn)
+def build_code_map_from_db(db_path_or_pool):
+    """Flexible: accept either DB path or connection pool."""
+    if isinstance(db_path_or_pool, str):
+        logger.info(f"Initializing DB pool for path: {db_path_or_pool}")
+        db_pool = SQLiteConnectionPool(db_path_or_pool, pool_size=5)
     else:
-        conn = db_path_or_conn
-    return _build_code_map_from_db(conn)
+        db_pool = db_path_or_pool
+    return _build_code_map_from_db(db_pool)

@@ -1,0 +1,11 @@
+# config.yaml
+default_path: "C:/Users/User/Documents/coding/pkm/pokeheartgold"
+
+# URL of your local LLM server
+local_llm_url: "http://localhost:8000"
+
+# Default maximum tokens for summarization requests
+default_max_tokens: 800
+
+# Default temperature for LLM generation
+default_temperature: 0.3

@@ -1,5 +1,5 @@
 import yaml
-from laurus_llm.llm_helpers import LLMWrapper
+from laurus_llm.client.llm_helpers import LLMWrapper
 
 
 # ---------------- Config ----------------
@@ -9,6 +9,9 @@ def load_config(path="config.yaml"):
 
 
 _config = load_config()
+DEFAULT_PATH = _config.get(
+    "default_path", "C:/Users/User/Documents/coding/pkm/pokeheartgold"
+)
 LOCAL_LLM_URL = _config.get("local_llm_url", "http://localhost:8000")
 DEFAULT_MAX_TOKENS = int(_config.get("default_max_tokens", 800))
 DEFAULT_TEMP = float(_config.get("default_temperature", 0.3))

@@ -1,6 +1,6 @@
 # code_analysis/output.py
 import json
-from summarizer import print_pretty_overview
+from actions.summarizer import print_pretty_overview
 
 
 def print_code_map(code_map, json_out=False, pretty=False, root_path="."):
