@@ -1,7 +1,43 @@
 # main.py - Frontend menu
 
 import sys
-import os
+import subprocess
+import importlib
+import logging
+from pathlib import Path
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+REQUIREMENTS_FILE = Path(__file__).parent / "requirements.txt"
+
+
+def install_requirements():
+    """Install packages from requirements.txt if missing."""
+    if not REQUIREMENTS_FILE.exists():
+        logger.warning("requirements.txt not found. Skipping auto-install.")
+        return
+
+    with open(REQUIREMENTS_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Extract module name from package name (simple heuristic)
+            module_name = line.split("==")[0].replace("-", "_")
+            try:
+                importlib.import_module(module_name)
+            except ModuleNotFoundError:
+                logger.warning(
+                    f"Module '{module_name}' not found. Installing {line}..."
+                )
+                subprocess.check_call([sys.executable, "-m", "pip", "install", line])
+                logger.info(f"Module '{module_name}' installed.")
+
+
+# Run auto-install
+install_requirements()
+
 from rich.console import Console
 from rich.table import Table
 from actions.run_analysis import run_full_analysis, build_code_map_from_db
