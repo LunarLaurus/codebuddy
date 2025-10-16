@@ -1,4 +1,5 @@
-tree_sitter==0.20.1
-PyYAML
-openai==0.27.0
 rich==13.3.2
+PyYAML
+laurus-local-llm
+tree_sitter
+tree_sitter_languages
