@@ -264,7 +264,7 @@ def parse_and_store_entire_codebase(
             return False, rel_path, e
 
     # Watchdog thread: reports progress every N seconds until done_event is set
-    def _watchdog(interval: float = 5.0):
+    def _watchdog(interval: float = 2.0):
         logger.info("Watchdog started: reporting progress every %.1fs", interval)
         while not done_event.is_set():
             with processed_count_lock:
