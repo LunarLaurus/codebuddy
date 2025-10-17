@@ -8,7 +8,7 @@ from pathlib import Path
 from util.project_manager import select_project, clone_project, list_projects, Project
 from actions.run_analysis import run_full_analysis, build_code_map_from_db
 from actions.resummarize import resummarize_changed_files
-from actions.summarizer import print_pretty_overview
+from actions.resummarize import print_pretty_overview
 
 from rich.console import Console
 from rich.table import Table
@@ -18,6 +18,35 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 REQUIREMENTS_FILE = Path(__file__).parent / "requirements.txt"
+
+PRET_GIT_REPOS = [
+    "https://github.com/pret/pokered.git",
+    "https://github.com/pret/pokeyellow.git",
+    "https://github.com/pret/pokegold.git",
+    "https://github.com/pret/pokegold-spaceworld.git",
+    "https://github.com/pret/pokecrystal.git",
+    "https://github.com/pret/pokeruby.git",
+    "https://github.com/pret/pokeemerald.git",
+    "https://github.com/pret/pokefirered.git",
+    "https://github.com/pret/pokediamond.git",
+    "https://github.com/pret/pokeplatinum.git",
+    "https://github.com/pret/pokeheartgold.git",
+    "https://github.com/pret/pokestadium.git",
+    "https://github.com/pret/pokestadiumgs.git",
+    "https://github.com/pret/poketcg.git",
+    "https://github.com/pret/poketcg2.git",
+    "https://github.com/pret/pmd-red.git",
+    "https://github.com/pret/pmd-sky.git",
+    "https://github.com/pret/pokepinball.git",
+    "https://github.com/pret/pokepinballrs.git",
+    "https://github.com/pret/pokepuzzle.git",
+    "https://github.com/diasurgical/devilution.git",
+    "https://github.com/pmret/papermario",
+    "https://github.com/bomberhackers/bm64",
+    "https://github.com/bomberhackers/tsa",
+    "https://github.com/bomberhackers/bmhero",
+    "https://github.com/sonicdcer/sf64",
+]
 
 
 def install_requirements():
@@ -85,6 +114,36 @@ def list_db_files():
         console.print(table)
 
 
+def choose_git_url(predefined_urls: list[str]) -> str:
+    """
+    Presents a menu of Git URLs to choose from.
+    Option 0 allows entering a custom URL.
+    Returns the selected or entered URL.
+    """
+    while True:
+        print("\nGit Repository Options:")
+        print("0) Enter custom Git URL")
+        for i, url in enumerate(predefined_urls, start=1):
+            print(f"{i}) {url}")
+
+        choice = input("Select a repository: ").strip()
+
+        if choice == "0":
+            custom_url = input("Enter custom Git URL: ").strip()
+            if custom_url:
+                return custom_url
+            else:
+                print("Empty URL, try again.")
+                continue
+
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(predefined_urls):
+                return predefined_urls[idx - 1]
+
+        print("Invalid choice, please try again.")
+
+
 def main():
     install_requirements()
     active_project: Project | None = None
@@ -144,7 +203,8 @@ def main():
                 console.print(table)
 
         elif choice == "6":
-            git_url = input("Enter Git URL to clone: ").strip()
+            # Let user pick from predefined URLs or enter a custom one
+            git_url = choose_git_url(PRET_GIT_REPOS)
             name = input("Optional: project name: ").strip() or None
             try:
                 project = clone_project(git_url, name)

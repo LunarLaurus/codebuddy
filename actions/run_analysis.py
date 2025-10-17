@@ -1,15 +1,19 @@
 # actions/run_analysis.py
+
 import asyncio
 import logging
 from pathlib import Path
 import threading
+import signal
 
-from util.db_utils import SQLiteConnectionPool
+from util.db_utils import (
+    SQLiteConnectionPool,
+    mark_processed,
+)
 from code_analysis.parser import load_language, get_parser
 from code_analysis.code_map_builder import parse_and_store_entire_codebase
-from code_analysis.summarization import resummarize_file, summarize_function_in_db
+from .resummarize import _resummarize_file_async, summarize_function_in_db
 from code_analysis.code_map import build_code_map_from_db as _build_code_map_from_db
-from code_analysis.output import print_code_map
 
 # ------------------------------
 # Logging setup
@@ -22,10 +26,68 @@ logger = logging.getLogger(__name__)
 # Lock to serialize DB access in this module
 _db_lock = threading.Lock()
 
+# Global stop flag for graceful shutdown
+_stop_flag = False
+
+
+def _handle_sigint(signum, frame):
+    global _stop_flag
+    _stop_flag = True
+    logger.info("Received interrupt signal, will stop after current tasks.")
+
+
+signal.signal(signal.SIGINT, _handle_sigint)
+signal.signal(signal.SIGTERM, _handle_sigint)
+
+
+def _get_unprocessed_files(db_pool, commit_sha="HEAD"):
+    """Return list of files not yet summarized for this commit."""
+    with _db_lock:
+        conn = db_pool.acquire()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT f.file_id, f.path
+                FROM files f
+                LEFT JOIN summary_status_commit s
+                    ON s.item_type='file' AND s.item_id=f.file_id AND s.commit_sha=?
+                WHERE s.history_id IS NULL
+                """,
+                (commit_sha,),
+            )
+            return cur.fetchall()
+        finally:
+            db_pool.release(conn)
+
+
+def _get_unprocessed_functions(db_pool, commit_sha="HEAD"):
+    """Return list of functions not yet summarized for this commit."""
+    with _db_lock:
+        conn = db_pool.acquire()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT fn.function_id, fn.code_snippet
+                FROM functions fn
+                LEFT JOIN summary_status_commit s
+                    ON s.item_type='function' AND s.item_id=fn.function_id AND s.commit_sha=?
+                WHERE s.history_id IS NULL
+                """,
+                (commit_sha,),
+            )
+            return cur.fetchall()
+        finally:
+            db_pool.release(conn)
+
 
 async def _run_full_analysis_async(
     repo_path: str, db_path: str, summarize_functions: bool
 ):
+    """Parse, summarize, and store the entire codebase asynchronously."""
+    global _stop_flag
+
     logger.info("Initializing DB connection pool...")
     db_pool = SQLiteConnectionPool(db_path, pool_size=5, timeout=30, enable_wal=True)
 
@@ -36,62 +98,49 @@ async def _run_full_analysis_async(
     logger.info(f"Resolved repository path: {root_path}")
 
     logger.info("Parsing and storing entire codebase...")
-    # Run parse_and_store_entire_codebase in a separate thread and wait for DB writer to finish
     await asyncio.to_thread(
         parse_and_store_entire_codebase, db_pool, parser, str(root_path)
     )
     logger.info("Codebase parsing complete.")
 
-    # File-level summaries
-    with _db_lock:
-        conn = db_pool.acquire()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT file_id, path FROM files")
-            files = cur.fetchall()
-            logger.info(f"Found {len(files)} files to summarize.")
-        finally:
-            db_pool.release(conn)
+    # ---------------- File-level summaries ----------------
+    files = _get_unprocessed_files(db_pool)
+    logger.info(f"Found {len(files)} files to summarize.")
 
-    if files:
-        logger.info("Starting file-level summaries...")
-        tasks = [
-            asyncio.to_thread(
-                resummarize_file,
-                db_pool,
-                parser,
-                root_path / rel_path,
-                commit_sha="HEAD",
-            )
-            for _, rel_path in files
-        ]
-        await asyncio.gather(*tasks)
-        logger.info("File-level summaries complete.")
+    for file_id, rel_path in files:
+        if _stop_flag:
+            logger.info("Stopping file-level summaries due to interrupt.")
+            break
+        await asyncio.to_thread(
+            _resummarize_file_async,
+            db_pool,
+            parser,
+            root_path / rel_path,
+            commit_sha="HEAD",
+        )
+        mark_processed(db_pool, "file", file_id, commit_sha="HEAD")
 
-    # Function-level summaries
+    logger.info("File-level summaries complete.")
+
+    # ---------------- Function-level summaries ----------------
     if summarize_functions:
-        logger.info("Starting function-level summaries...")
-        with _db_lock:
-            conn = db_pool.acquire()
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT function_id, code_snippet FROM functions")
-                functions = cur.fetchall()
-                logger.info(f"Found {len(functions)} functions to summarize.")
-            finally:
-                db_pool.release(conn)
+        functions = _get_unprocessed_functions(db_pool)
+        logger.info(f"Found {len(functions)} functions to summarize.")
 
-        func_tasks = [
-            asyncio.to_thread(
+        for fid, snippet in functions:
+            if _stop_flag:
+                logger.info("Stopping function-level summaries due to interrupt.")
+                break
+            if not snippet.strip():
+                continue
+            await asyncio.to_thread(
                 summarize_function_in_db, db_pool, fid, snippet, commit_sha="HEAD"
             )
-            for fid, snippet in functions
-            if snippet.strip()
-        ]
-        if func_tasks:
-            await asyncio.gather(*func_tasks)
+            mark_processed(db_pool, "function", fid, commit_sha="HEAD")
+
         logger.info("Function-level summaries complete.")
 
+    # ---------------- Build code map ----------------
     logger.info("Building code map from DB...")
     code_map = _build_code_map_from_db(db_pool)
     logger.info("Code map construction complete.")

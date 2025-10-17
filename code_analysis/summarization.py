@@ -1,7 +1,7 @@
 # code_analysis/summarization.py
 from code_analysis.code_extractor import extract_info_from_file
 from code_analysis.code_map_builder import store_file_info
-from actions.summarizer import summarize_file_in_db, summarize_function_in_db
+from actions.resummarize import summarize_file_in_db, summarize_function_in_db
 from util.db_utils import insert_or_get_file_id
 from pathlib import Path
 

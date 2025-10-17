@@ -1,5 +1,6 @@
 # db_utils.py
 
+from datetime import datetime
 import sqlite3
 import os
 import hashlib
@@ -71,6 +72,22 @@ CREATE TABLE IF NOT EXISTS commits (
     author TEXT,
     message TEXT
 );
+
+CREATE TABLE IF NOT EXISTS summary_status_master (
+    item_id INTEGER PRIMARY KEY,      -- unique identifier for file or function
+    item_type TEXT NOT NULL,          -- e.g., 'file' or 'function'
+    first_seen_at TEXT NOT NULL       -- first time this item was processed
+);
+
+CREATE TABLE IF NOT EXISTS summary_status_commit (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,         -- FK to master table
+    commit_sha TEXT NOT NULL,         -- commit this summary belongs to
+    last_updated_at TEXT NOT NULL,    -- last time processed for this commit
+    FOREIGN KEY(item_id) REFERENCES summary_status_master(item_id),
+    UNIQUE(item_id, commit_sha)       -- one row per item per commit
+);
+
 """
 
 
@@ -128,6 +145,60 @@ class SQLiteConnectionPool:
 # ------------------------------
 def compute_code_hash(code_text: str) -> str:
     return hashlib.md5(code_text.encode("utf-8")).hexdigest()
+
+
+# mark_processed for master + commit tables
+def mark_processed(db_pool, item_type: str, item_id: int, commit_sha: str = "HEAD"):
+    """
+    Record that an item (file/function) has been processed.
+    - Creates master entry if first time seen.
+    - Updates/creates per-commit entry.
+    """
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+
+        # 1 Ensure master record exists
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO summary_status_master (item_id, item_type, first_seen_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+            (item_id, item_type),
+        )
+
+        # 2 Insert or update commit-specific record
+        cur.execute(
+            """
+            INSERT INTO summary_status_commit (item_id, commit_sha, last_updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_id, commit_sha) DO UPDATE SET
+                last_updated_at = CURRENT_TIMESTAMP
+            """,
+            (item_id, commit_sha),
+        )
+
+        conn.commit()
+    finally:
+        db_pool.release(conn)
+
+
+def get_item_status(db_pool, item_id: int):
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT m.first_seen_at, c.commit_sha, c.last_updated_at
+            FROM summary_status_master m
+            LEFT JOIN summary_status_commit c ON m.item_id = c.item_id
+            WHERE m.item_id = ?
+            """,
+            (item_id,),
+        )
+        return cur.fetchall()  # list of (first_seen_at, commit_sha, last_updated_at)
+    finally:
+        db_pool.release(conn)
 
 
 # ------------------------------
