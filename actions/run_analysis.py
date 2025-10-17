@@ -8,12 +8,14 @@ import signal
 
 from util.db_utils import (
     SQLiteConnectionPool,
+    get_unprocessed_files,
+    get_unprocessed_functions,
     mark_processed,
 )
 from code_analysis.parser import load_language, get_parser
 from code_analysis.code_map_builder import parse_and_store_entire_codebase
-from .resummarize import _resummarize_file_async, summarize_function_in_db
 from code_analysis.code_map import build_code_map_from_db as _build_code_map_from_db
+from .resummarize import _resummarize_file_async, summarize_function_in_db
 
 # ------------------------------
 # Logging setup
@@ -40,48 +42,6 @@ signal.signal(signal.SIGINT, _handle_sigint)
 signal.signal(signal.SIGTERM, _handle_sigint)
 
 
-def _get_unprocessed_files(db_pool, commit_sha="HEAD"):
-    """Return list of files not yet summarized for this commit."""
-    with _db_lock:
-        conn = db_pool.acquire()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT f.file_id, f.path
-                FROM files f
-                LEFT JOIN summary_status_commit s
-                    ON s.item_type='file' AND s.item_id=f.file_id AND s.commit_sha=?
-                WHERE s.history_id IS NULL
-                """,
-                (commit_sha,),
-            )
-            return cur.fetchall()
-        finally:
-            db_pool.release(conn)
-
-
-def _get_unprocessed_functions(db_pool, commit_sha="HEAD"):
-    """Return list of functions not yet summarized for this commit."""
-    with _db_lock:
-        conn = db_pool.acquire()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT fn.function_id, fn.code_snippet
-                FROM functions fn
-                LEFT JOIN summary_status_commit s
-                    ON s.item_type='function' AND s.item_id=fn.function_id AND s.commit_sha=?
-                WHERE s.history_id IS NULL
-                """,
-                (commit_sha,),
-            )
-            return cur.fetchall()
-        finally:
-            db_pool.release(conn)
-
-
 async def _run_full_analysis_async(
     repo_path: str, db_path: str, summarize_functions: bool
 ):
@@ -104,7 +64,7 @@ async def _run_full_analysis_async(
     logger.info("Codebase parsing complete.")
 
     # ---------------- File-level summaries ----------------
-    files = _get_unprocessed_files(db_pool)
+    files = get_unprocessed_files(db_pool)
     logger.info(f"Found {len(files)} files to summarize.")
 
     for file_id, rel_path in files:
@@ -124,7 +84,7 @@ async def _run_full_analysis_async(
 
     # ---------------- Function-level summaries ----------------
     if summarize_functions:
-        functions = _get_unprocessed_functions(db_pool)
+        functions = get_unprocessed_functions(db_pool)
         logger.info(f"Found {len(functions)} functions to summarize.")
 
         for fid, snippet in functions:

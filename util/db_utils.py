@@ -371,3 +371,47 @@ def fetch_function_name_and_file(pool: SQLiteConnectionPool, function_id: int):
         return unique_name, rel_path
     finally:
         pool.release(conn)
+
+
+def get_unprocessed_files(db_pool, commit_sha="HEAD"):
+    """Return list of files not yet summarized for this commit."""
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT f.file_id, f.path
+            FROM files f
+            LEFT JOIN summary_status_master m
+                ON m.item_id = f.file_id AND m.item_type = 'file'
+            LEFT JOIN summary_status_commit s
+                ON s.item_id = m.item_id AND s.commit_sha = ?
+            WHERE s.history_id IS NULL
+            """,
+            (commit_sha,),
+        )
+        return cur.fetchall()
+    finally:
+        db_pool.release(conn)
+
+
+def get_unprocessed_functions(db_pool, commit_sha="HEAD"):
+    """Return list of functions not yet summarized for this commit."""
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT fn.function_id, fn.code_snippet
+            FROM functions fn
+            LEFT JOIN summary_status_master m
+                ON m.item_id = fn.function_id AND m.item_type = 'function'
+            LEFT JOIN summary_status_commit s
+                ON s.item_id = m.item_id AND s.commit_sha = ?
+            WHERE s.history_id IS NULL
+            """,
+            (commit_sha,),
+        )
+        return cur.fetchall()
+    finally:
+        db_pool.release(conn)
