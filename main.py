@@ -163,9 +163,7 @@ def main():
                 continue
 
             if choice == "1":
-                summarize_functions = (
-                    input("Summarize functions? (y/N): ").strip().lower() == "y"
-                )
+                summarize_functions = prompt_bool("Summarize functions?", default=True)
                 run_full_analysis(project.path, project.db_path, summarize_functions)
 
             elif choice == "2":
@@ -228,6 +226,30 @@ def main():
 
         else:
             console.print("[bold red]Invalid choice![/bold red]")
+
+
+def prompt_bool(prompt: str, default: bool = True) -> bool:
+    """
+    Prompt the user for a yes/no question with flexible inputs.
+
+    Accepts: y, n, yes, no, t, f, true, false, 1, 0 (case-insensitive).
+    If user presses Enter, returns `default`.
+    """
+    TRUE_VALUES = {"y", "yes", "t", "true", "1"}
+    FALSE_VALUES = {"n", "no", "f", "false", "0"}
+
+    default_str = "yes" if default else "no"
+    prompt_suffix = f" (default: {default_str}): "
+
+    while True:
+        user_input = input(prompt + prompt_suffix).strip().lower()
+        if not user_input:
+            return default
+        if user_input in TRUE_VALUES:
+            return True
+        if user_input in FALSE_VALUES:
+            return False
+        print("Please enter yes or no (y/n, true/false, t/f, 1/0).")
 
 
 if __name__ == "__main__":

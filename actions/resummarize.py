@@ -13,7 +13,7 @@ from rich.text import Text
 from rich.table import Table
 from rich import box
 
-from util.llm_client import generate_llm_summary
+from util.llm_client import generate_llm_summary, set_mode_c, set_mode_file
 from util.db_utils import (
     SQLiteConnectionPool,
     insert_file_summary,
@@ -63,7 +63,10 @@ def create_file_prompt(abs_file_path, info):
         content = ""
 
     LOG.info(
-        "Created prompt for file %s (length=%d chars)", abs_file_path, len(content)
+        "Created prompt for file %s (length=%d chars) content=%s",
+        abs_file_path,
+        len(content),
+        content,
     )
     return f"""This is a C {file_type} at {abs_file_path}, with extracted data structures, typedefs, and globals.
 Summarize the file’s purpose and usage. Keep it concise.
@@ -92,9 +95,10 @@ def create_refine_prompt(abs_file_path, first_summary):
         content = ""
 
     LOG.info(
-        "Created refinement prompt for file %s (summary length=%d)",
+        "Created refinement prompt for file %s (summary length=%d) summary=%s",
         abs_file_path,
         len(first_summary),
+        first_summary,
     )
     return f"""Below is the initial summary for file {abs_file_path}:
 
@@ -118,6 +122,7 @@ def summarize_file_in_db(
     LOG.info("Summarizing file: %s", abs_file_path)
 
     try:
+        set_mode_file
         prompt = create_file_prompt(abs_file_path, info)
         summary1 = generate_llm_summary(prompt)
         LOG.info(
@@ -164,6 +169,60 @@ Refine or improve it, focusing on correctness and brevity.
 
         insert_function_summary(db_pool, function_id, commit_sha, summ1, summ2)
         mark_processed(db_pool, "function", function_id, commit_sha)
+        LOG.info(
+            "Function summaries and status updated in DB for function ID %s",
+            function_id,
+        )
+    except Exception:
+        LOG.exception("Failed to summarize function ID %s", function_id)
+        raise
+
+
+async def summarize_function_in_db_async(
+    db_pool, function_id: int, code_snippet: str, commit_sha: str = "HEAD"
+):
+    """
+    Async wrapper around the existing (blocking) summarization pipeline.
+    Blocking operations (LLM calls and DB writes) are executed via asyncio.to_thread
+    so the coroutine does not block the event loop.
+    """
+    set_mode_c
+    LOG.info(
+        "Summarizing function ID: %s (code length=%d)", function_id, len(code_snippet)
+    )
+
+    try:
+        prompt1 = f"""Below is a single C function:
+
+=== FUNCTION CODE ===
+{code_snippet}
+=== CODE END ===
+
+Summarize its purpose, inputs, outputs, and key logic. Keep it concise.
+"""
+        # run blocking LLM call in a thread
+        summ1 = await asyncio.to_thread(generate_llm_summary, prompt1)
+        LOG.info("Initial function summary generated (length=%d)", len(summ1 or ""))
+
+        prompt2 = f"""Initial summary of the function:
+{summ1}
+
+Refine or improve it, focusing on correctness and brevity.
+"""
+        # run second LLM call in a thread
+        summ2 = await asyncio.to_thread(generate_llm_summary, prompt2)
+        LOG.info("Refined function summary generated (length=%d)", len(summ2 or ""))
+
+        # Insert DB write in a thread (blocking DB helper)
+        await asyncio.to_thread(
+            insert_function_summary, db_pool, function_id, commit_sha, summ1, summ2
+        )
+
+        # mark processed in DB (also run in thread)
+        await asyncio.to_thread(
+            mark_processed, db_pool, "function", function_id, commit_sha
+        )
+
         LOG.info(
             "Function summaries and status updated in DB for function ID %s",
             function_id,
@@ -291,7 +350,7 @@ async def _resummarize_file_async(db_pool, parser, full_path: Path, commit_sha: 
 
     conn = db_pool.acquire()
     try:
-        store_file_info(conn, str(full_path), info)
+        store_file_info(db_pool, str(full_path), info)
         file_id = insert_or_get_file_id(db_pool, str(full_path))
         summarize_file_in_db(
             db_pool, file_id, str(full_path), info, commit_sha=commit_sha
@@ -310,7 +369,7 @@ async def _resummarize_file_async(db_pool, parser, full_path: Path, commit_sha: 
             )
             if cur.fetchone():
                 continue
-            summarize_function_in_db(db_pool, fid, snippet, commit_sha=commit_sha)
+            summarize_function_in_db_async(db_pool, fid, snippet, commit_sha=commit_sha)
     finally:
         db_pool.release(conn)
 

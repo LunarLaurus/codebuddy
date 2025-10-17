@@ -1,12 +1,12 @@
 # config.yaml
 
 # URL of your local LLM server
-local_llm_url: "http://localhost:8000"
+local_llm_url: "http://192.168.0.102:8000"
 
 # Default maximum tokens for summarization requests
 default_max_tokens: 768
 
-default_timeout_second: 60.0
+default_timeout_second: 180.0
 
 # Default temperature for LLM generation
 default_temperature: 0.3

@@ -1,7 +1,7 @@
 # code_analysis/summarization.py
 from code_analysis.code_extractor import extract_info_from_file
 from code_analysis.code_map_builder import store_file_info
-from actions.resummarize import summarize_file_in_db, summarize_function_in_db
+from actions.resummarize import summarize_file_in_db, summarize_function_in_db_async
 from util.db_utils import insert_or_get_file_id
 from pathlib import Path
 
@@ -42,6 +42,6 @@ async def resummarize_file(db_pool, parser, full_path: Path, commit_sha: str):
             )
             if cur.fetchone():
                 continue
-            summarize_function_in_db(db_pool, fid, snippet, commit_sha=commit_sha)
+            summarize_function_in_db_async(db_pool, fid, snippet, commit_sha=commit_sha)
     finally:
         db_pool.release(conn)

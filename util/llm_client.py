@@ -38,7 +38,7 @@ LOG.info(
 )
 
 # ---------------- LLM client wrapper ----------------
-llm = LLMWrapper(base_url=LOCAL_LLM_URL, timeout=DEFAULT_TIMEOUT)
+llm = LLMWrapper(base_url=LOCAL_LLM_URL, timeout=DEFAULT_TIMEOUT, poll_interval=10)
 
 
 # ---------------- Summarizer function ----------------
@@ -76,6 +76,21 @@ def set_summarizer_mode(mode: str, custom_system_prompt: str = None):
     except Exception as e:
         LOG.exception("Failed to set summarizer mode")
         raise e
+
+
+def set_mode_file():
+    LOG.info("Setting summarizer mode: file")
+    set_summarizer_mode("file", None)
+
+
+def set_mode_c():
+    LOG.info("Setting summarizer mode: c")
+    set_summarizer_mode("c", None)
+
+
+def set_mode_asm():
+    LOG.info("Setting summarizer mode: asm")
+    set_summarizer_mode("asm", None)
 
 
 def reload_model(model_id: str = None):

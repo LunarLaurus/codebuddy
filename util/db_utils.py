@@ -183,6 +183,37 @@ def mark_processed(db_pool, item_type: str, item_id: int, commit_sha: str = "HEA
         db_pool.release(conn)
 
 
+def is_processed(
+    db_pool, item_type: str, item_id: int, commit_sha: str = "HEAD"
+) -> bool:
+    """
+    Check whether an item (file or function) has already been processed.
+    - Returns True if either:
+        • The item exists in summary_status_master (seen before), and
+        • The commit entry exists in summary_status_commit for the given commit_sha.
+    """
+    conn = db_pool.acquire()
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT 1
+            FROM summary_status_commit c
+            JOIN summary_status_master m
+              ON m.item_id = c.item_id
+            WHERE m.item_id = ? AND m.item_type = ? AND c.commit_sha = ?
+            LIMIT 1
+            """,
+            (item_id, item_type, commit_sha),
+        )
+        result = cur.fetchone()
+        return result is not None
+
+    finally:
+        db_pool.release(conn)
+
+
 def get_item_status(db_pool, item_id: int):
     conn = db_pool.acquire()
     try:
@@ -204,6 +235,22 @@ def get_item_status(db_pool, item_id: int):
 # ------------------------------
 # Database operations
 # ------------------------------
+def update_database_schema(db_path: str, schema: str = SCHEMA, timeout: int = 30):
+    """
+    Update an existing SQLite database to ensure all tables in the schema exist.
+    Existing tables are not affected; missing tables will be created.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(db_path, timeout=timeout)
+    try:
+        conn.executescript(schema)
+        conn.commit()
+        print(f"[INFO] Database schema updated for {db_path}")
+    finally:
+        conn.close()
+
+
 def insert_or_get_file_id(pool: SQLiteConnectionPool, path: str) -> int:
     conn = pool.acquire()
     try:
